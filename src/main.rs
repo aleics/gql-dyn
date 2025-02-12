@@ -1,49 +1,157 @@
-//! This example demonstrates simple default integration with [`axum`].
-
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
     Extension, Router,
     routing::{MethodFilter, get, on},
 };
-use juniper::{EmptyMutation, EmptySubscription, RootNode, graphql_interface, graphql_object};
+use juniper::{
+    EmptyMutation, EmptySubscription, GraphQLType, GraphQLValue, GraphQLValueAsync, Registry,
+    RootNode, ScalarValue, meta::MetaType,
+};
 use juniper_axum::{graphiql, graphql};
 use tokio::net::TcpListener;
 
-#[derive(Clone, Copy, Debug)]
-pub struct QueryRoot;
+#[derive(Clone)]
+enum FieldType {
+    String,
+    Number,
+}
 
-#[graphql_object]
-impl QueryRoot {
-    fn animals() -> Vec<AnimalValue> {
-        vec![AnimalValueEnum::Dog(Dog {}), AnimalValueEnum::Cat(Cat {})]
+struct Animal;
+
+struct AnimalLike;
+
+#[derive(Clone)]
+struct AnimalConfig {
+    name: &'static str,
+    fields: HashMap<&'static str, FieldType>,
+}
+
+struct AnimalLikeConfig {
+    current: AnimalConfig,
+    config: SharedQueryConfig,
+}
+
+struct QueryConfig {
+    animals: Vec<AnimalConfig>,
+}
+
+type SharedQueryConfig = Arc<QueryConfig>;
+
+struct QueryRoot;
+
+impl<S> GraphQLType<S> for Animal
+where
+    S: ScalarValue,
+{
+    fn name(_: &SharedQueryConfig) -> Option<&'static str> {
+        Some("Animal")
+    }
+
+    fn meta<'r>(i: &SharedQueryConfig, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
+    where
+        S: 'r,
+    {
+        for animal in &i.animals {
+            let config = AnimalLikeConfig {
+                current: animal.clone(),
+                config: i.clone(),
+            };
+            let _ = registry.get_type::<AnimalLike>(&config);
+        }
+
+        let fields = &[registry.field::<Option<String>>("name", &())];
+        registry.build_interface_type::<Self>(i, fields).into_meta()
     }
 }
 
-#[graphql_interface(for = [Dog, Cat])]
-trait Animal {
-    fn name(&self) -> &str;
-}
+impl<S> GraphQLValue<S> for Animal
+where
+    S: ScalarValue,
+{
+    type Context = ();
+    type TypeInfo = SharedQueryConfig;
 
-struct Dog;
-
-#[graphql_object]
-#[graphql(impl = [AnimalValue])]
-impl Dog {
-    fn name(&self) -> &str {
-        "dog"
+    fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
+        <Self as GraphQLType>::name(info)
     }
 }
 
-struct Cat;
+impl<S> GraphQLType<S> for AnimalLike
+where
+    S: ScalarValue,
+{
+    fn name(i: &Self::TypeInfo) -> Option<&'static str> {
+        Some(i.current.name)
+    }
 
-#[graphql_object]
-#[graphql(impl = [AnimalValue])]
-impl Cat {
-    fn name(&self) -> &str {
-        "cat"
+    fn meta<'r>(i: &Self::TypeInfo, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
+    where
+        S: 'r,
+    {
+        let _ = registry.get_type::<AnimalLike>(i);
+
+        let mut fields = vec![registry.field::<Option<String>>("name", &())];
+
+        for (field_name, field_type) in &i.current.fields {
+            let custom_field = match field_type {
+                FieldType::String => registry.field::<String>(field_name, &()),
+                FieldType::Number => registry.field::<i32>(field_name, &()),
+            };
+
+            fields.push(custom_field);
+        }
+
+        registry
+            .build_object_type::<Self>(i, fields.as_slice())
+            .interfaces(&[registry.get_type::<Animal>(&i.config)])
+            .into_meta()
     }
 }
+
+impl<S> GraphQLValue<S> for AnimalLike
+where
+    S: ScalarValue,
+{
+    type Context = ();
+    type TypeInfo = AnimalLikeConfig;
+
+    fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
+        <Self as GraphQLType>::name(info)
+    }
+}
+
+impl<S> GraphQLType<S> for QueryRoot
+where
+    S: ScalarValue,
+{
+    fn name(_: &SharedQueryConfig) -> Option<&'static str> {
+        Some("Query")
+    }
+
+    fn meta<'r>(i: &SharedQueryConfig, registry: &mut Registry<'r, S>) -> MetaType<'r, S>
+    where
+        S: 'r,
+    {
+        let fields = &[registry.field::<Option<Animal>>("animal", i)];
+
+        registry.build_object_type::<Self>(i, fields).into_meta()
+    }
+}
+
+impl<S> GraphQLValue<S> for QueryRoot
+where
+    S: ScalarValue,
+{
+    type Context = ();
+    type TypeInfo = SharedQueryConfig;
+
+    fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
+        <Self as GraphQLType>::name(info)
+    }
+}
+
+impl<S> GraphQLValueAsync<S> for QueryRoot where S: ScalarValue + Send + Sync {}
 
 type Schema = RootNode<'static, QueryRoot, EmptyMutation, EmptySubscription>;
 
@@ -53,7 +161,30 @@ async fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let schema = Schema::new(QueryRoot, EmptyMutation::new(), EmptySubscription::new());
+    let animals = vec![
+        AnimalConfig {
+            name: "Cat",
+            fields: HashMap::from_iter([("flur", FieldType::String)]),
+        },
+        AnimalConfig {
+            name: "Dog",
+            fields: HashMap::from_iter([("breed", FieldType::String)]),
+        },
+        AnimalConfig {
+            name: "Elephant",
+            fields: HashMap::from_iter([("age", FieldType::Number)]),
+        },
+    ];
+
+    // How to provide QueryConfig to the query root
+    let schema = Schema::new_with_info(
+        QueryRoot,
+        EmptyMutation::new(),
+        EmptySubscription::new(),
+        Arc::new(QueryConfig { animals }),
+        (),
+        (),
+    );
 
     let app = Router::new()
         .route(

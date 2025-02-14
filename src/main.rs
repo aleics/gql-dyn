@@ -1,44 +1,32 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 
 use axum::{
     Extension, Router,
-    routing::{MethodFilter, get, on},
+    routing::{get, post},
 };
+use config::{AnimalConfig, AnimalKind, FieldType};
+use data::{Animal, AnimalLike, Database, FieldValue};
 use juniper::{
-    EmptyMutation, EmptySubscription, GraphQLType, GraphQLValue, GraphQLValueAsync, Registry,
-    RootNode, ScalarValue, meta::MetaType,
+    Arguments, EmptyMutation, EmptySubscription, ExecutionResult, Executor, GraphQLType,
+    GraphQLValue, GraphQLValueAsync, Registry, RootNode, ScalarValue, Selection, meta::MetaType,
 };
-use juniper_axum::{graphiql, graphql};
+use juniper_axum::{extract::JuniperRequest, graphiql, response::JuniperResponse};
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
 
-#[derive(Clone)]
-enum FieldType {
-    String,
-    Number,
-}
+mod config;
+mod data;
+mod fixtures;
 
-struct Animal;
-
-struct AnimalLike;
-
-#[derive(Clone)]
-struct AnimalConfig {
-    name: &'static str,
-    fields: HashMap<&'static str, FieldType>,
-}
-
+#[derive(Debug)]
 struct AnimalLikeConfig {
     current: AnimalConfig,
     config: SharedQueryConfig,
 }
-
-struct QueryConfig {
-    animals: Vec<AnimalConfig>,
-}
-
-type SharedQueryConfig = Arc<QueryConfig>;
-
-struct QueryRoot;
 
 impl<S> GraphQLType<S> for Animal
 where
@@ -52,7 +40,7 @@ where
     where
         S: 'r,
     {
-        for animal in &i.animals {
+        for animal in i.animals.values() {
             let config = AnimalLikeConfig {
                 current: animal.clone(),
                 config: i.clone(),
@@ -75,9 +63,44 @@ where
     fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
         <Self as GraphQLType>::name(info)
     }
+
+    fn resolve_field(
+        &self,
+        _: &Self::TypeInfo,
+        field_name: &str,
+        _: &Arguments<S>,
+        executor: &Executor<Self::Context, S>,
+    ) -> ExecutionResult<S> {
+        match field_name {
+            "name" => executor.resolve(&(), &self.name),
+            _ => panic!("Unknown field {}", field_name),
+        }
+    }
+
+    fn resolve_into_type(
+        &self,
+        info: &Self::TypeInfo,
+        type_name: &str,
+        _selection_set: Option<&[Selection<S>]>,
+        executor: &Executor<Self::Context, S>,
+    ) -> ExecutionResult<S> {
+        let current = info.animals.get(type_name).expect("Type not found");
+
+        executor.resolve_with_ctx(
+            &AnimalLikeConfig {
+                current: current.clone(),
+                config: info.clone(),
+            },
+            &AnimalLike { data: self },
+        )
+    }
+
+    fn concrete_type_name(&self, _: &Self::Context, _: &Self::TypeInfo) -> String {
+        self.kind.to_string()
+    }
 }
 
-impl<S> GraphQLType<S> for AnimalLike
+impl<S> GraphQLType<S> for AnimalLike<'_>
 where
     S: ScalarValue,
 {
@@ -109,7 +132,7 @@ where
     }
 }
 
-impl<S> GraphQLValue<S> for AnimalLike
+impl<S> GraphQLValue<S> for AnimalLike<'_>
 where
     S: ScalarValue,
 {
@@ -119,7 +142,36 @@ where
     fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
         <Self as GraphQLType>::name(info)
     }
+
+    fn resolve_field(
+        &self,
+        _: &Self::TypeInfo,
+        field_name: &str,
+        _: &Arguments<S>,
+        executor: &Executor<Self::Context, S>,
+    ) -> ExecutionResult<S> {
+        match field_name {
+            "name" => executor.resolve(&(), &self.data.name),
+            _ => {
+                let field_value = self.data.fields.get(field_name);
+                match field_value {
+                    Some(FieldValue::String(value)) => executor.resolve(&(), value),
+                    Some(FieldValue::Number(value)) => executor.resolve(&(), value),
+                    None => ExecutionResult::Ok(juniper::Value::Null),
+                }
+            }
+        }
+    }
 }
+
+type SharedQueryConfig = Arc<QueryConfig>;
+
+#[derive(Debug)]
+struct QueryConfig {
+    animals: HashMap<AnimalKind, AnimalConfig>,
+}
+
+struct QueryRoot;
 
 impl<S> GraphQLType<S> for QueryRoot
 where
@@ -133,8 +185,7 @@ where
     where
         S: 'r,
     {
-        let fields = &[registry.field::<Option<Animal>>("animal", i)];
-
+        let fields = &[registry.field::<Vec<Animal>>("animals", i)];
         registry.build_object_type::<Self>(i, fields).into_meta()
     }
 }
@@ -143,17 +194,58 @@ impl<S> GraphQLValue<S> for QueryRoot
 where
     S: ScalarValue,
 {
-    type Context = ();
+    type Context = Database;
     type TypeInfo = SharedQueryConfig;
 
     fn type_name<'i>(&self, info: &'i Self::TypeInfo) -> Option<&'i str> {
         <Self as GraphQLType>::name(info)
     }
+
+    fn resolve_field(
+        &self,
+        info: &Self::TypeInfo,
+        field_name: &str,
+        _: &Arguments<S>,
+        executor: &Executor<Self::Context, S>,
+    ) -> ExecutionResult<S> {
+        let database = executor.context();
+        match field_name {
+            "animals" => {
+                let animals = database.animals.read().unwrap();
+                executor.resolve_with_ctx(info, &animals.iter().collect::<Vec<_>>())
+            }
+            _ => ExecutionResult::Ok(juniper::Value::Null),
+        }
+    }
 }
 
-impl<S> GraphQLValueAsync<S> for QueryRoot where S: ScalarValue + Send + Sync {}
+impl<S> GraphQLValueAsync<S> for QueryRoot
+where
+    S: ScalarValue + Send + Sync,
+{
+    fn resolve_field_async<'a>(
+        &'a self,
+        info: &'a Self::TypeInfo,
+        field_name: &'a str,
+        arguments: &'a Arguments<S>,
+        executor: &'a Executor<Self::Context, S>,
+    ) -> juniper::BoxFuture<'a, ExecutionResult<S>> {
+        let value = self.resolve_field(info, field_name, arguments, executor);
+        Box::pin(futures::future::ready(value))
+    }
+}
 
-type Schema = RootNode<'static, QueryRoot, EmptyMutation, EmptySubscription>;
+type Schema = RootNode<'static, QueryRoot, EmptyMutation<Database>, EmptySubscription<Database>>;
+
+impl juniper::Context for Database {}
+
+async fn graphql(
+    Extension(schema): Extension<Arc<Schema>>,
+    Extension(database): Extension<Database>,
+    JuniperRequest(request): JuniperRequest,
+) -> JuniperResponse {
+    JuniperResponse(request.execute(&*schema, &database).await)
+}
 
 #[tokio::main]
 async fn main() {
@@ -161,41 +253,46 @@ async fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let animals = vec![
-        AnimalConfig {
+    let animals_config = HashMap::from([
+        ("Cat", AnimalConfig {
             name: "Cat",
-            fields: HashMap::from_iter([("flur", FieldType::String)]),
-        },
-        AnimalConfig {
+            fields: HashMap::from_iter([("fur", FieldType::String)]),
+        }),
+        ("Dog", AnimalConfig {
             name: "Dog",
             fields: HashMap::from_iter([("breed", FieldType::String)]),
-        },
-        AnimalConfig {
+        }),
+        ("Elephant", AnimalConfig {
             name: "Elephant",
             fields: HashMap::from_iter([("age", FieldType::Number)]),
-        },
-    ];
+        }),
+    ]);
+
+    let animals = fixtures::generate_animals(&animals_config, 1_000_000);
+
+    let database = Database {
+        animals: Arc::new(RwLock::new(animals)),
+    };
 
     // How to provide QueryConfig to the query root
     let schema = Schema::new_with_info(
         QueryRoot,
         EmptyMutation::new(),
         EmptySubscription::new(),
-        Arc::new(QueryConfig { animals }),
+        Arc::new(QueryConfig {
+            animals: animals_config,
+        }),
         (),
         (),
     );
 
     let app = Router::new()
-        .route(
-            "/graphql",
-            on(
-                MethodFilter::GET.or(MethodFilter::POST),
-                graphql::<Arc<Schema>>,
-            ),
-        )
+        .route("/graphql", get(graphql))
+        .route("/graphql", post(graphql))
         .route("/", get(graphiql("/graphql", None)))
-        .layer(Extension(Arc::new(schema)));
+        .layer(Extension(Arc::new(schema)))
+        .layer(Extension(database))
+        .layer(CompressionLayer::new().gzip(true));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     let listener = TcpListener::bind(addr)

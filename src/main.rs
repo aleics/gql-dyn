@@ -6,8 +6,8 @@ use std::{
 };
 
 use axum::{
-    Extension, Router,
     routing::{get, post},
+    Extension, Router,
 };
 use config::{AnimalKind, ConfigProvider};
 use data::Database;

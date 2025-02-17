@@ -1,8 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    iter::FromIterator,
+};
 
 use crate::{
-    AnimalKind,
     data::{Animal, FieldValue},
+    AnimalKind,
 };
 
 pub(crate) fn generate_animals(animal_kinds: &HashSet<AnimalKind>, amount: usize) -> Vec<Animal> {

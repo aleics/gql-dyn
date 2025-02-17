@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use crate::config::{AnimalConfig, AnimalKind, FieldType};
 use crate::data::{Animal, AnimalLike, Database, FieldValue};
 use juniper::{
-    Arguments, EmptyMutation, EmptySubscription, ExecutionResult, Executor, GraphQLType,
-    GraphQLValue, GraphQLValueAsync, Registry, RootNode, ScalarValue, Selection, meta::MetaType,
+    meta::MetaType, Arguments, EmptyMutation, EmptySubscription, ExecutionResult, Executor,
+    GraphQLType, GraphQLValue, GraphQLValueAsync, Registry, RootNode, ScalarValue, Selection,
 };
 
 const ANIMALS_QUERY_NAME: &str = "animals";

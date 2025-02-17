@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{Animal, AnimalKind, FieldValue};
+use crate::{
+    AnimalKind,
+    data::{Animal, FieldValue},
+};
 
 pub(crate) fn generate_animals(animal_kinds: &HashSet<AnimalKind>, amount: usize) -> Vec<Animal> {
     let mut result = Vec::with_capacity(amount * animal_kinds.len());

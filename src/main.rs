@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    iter::FromIterator,
     net::SocketAddr,
     sync::{Arc, RwLock},
 };
@@ -8,19 +9,24 @@ use axum::{
     Extension, Router,
     routing::{get, post},
 };
-use config::{AnimalConfig, AnimalKind, FieldType};
+use config::{AnimalConfig, AnimalKind, ConfigProvider, FieldType};
 use data::{Animal, AnimalLike, Database, FieldValue};
 use juniper::{
     Arguments, EmptyMutation, EmptySubscription, ExecutionResult, Executor, GraphQLType,
     GraphQLValue, GraphQLValueAsync, Registry, RootNode, ScalarValue, Selection, meta::MetaType,
 };
 use juniper_axum::{extract::JuniperRequest, graphiql, response::JuniperResponse};
+use lazy_static::lazy_static;
 use tokio::net::TcpListener;
 use tower_http::compression::CompressionLayer;
 
 mod config;
 mod data;
 mod fixtures;
+
+lazy_static! {
+    static ref ANIMAL_KINDS: HashSet<AnimalKind> = HashSet::from_iter(["Cat", "Dog", "Elephant"]);
+}
 
 #[derive(Debug)]
 struct AnimalLikeConfig {
@@ -240,11 +246,21 @@ type Schema = RootNode<'static, QueryRoot, EmptyMutation<Database>, EmptySubscri
 impl juniper::Context for Database {}
 
 async fn graphql(
-    Extension(schema): Extension<Arc<Schema>>,
     Extension(database): Extension<Database>,
     JuniperRequest(request): JuniperRequest,
 ) -> JuniperResponse {
-    JuniperResponse(request.execute(&*schema, &database).await)
+    let schema = Schema::new_with_info(
+        QueryRoot,
+        EmptyMutation::new(),
+        EmptySubscription::new(),
+        Arc::new(QueryConfig {
+            animals: ConfigProvider::generate(),
+        }),
+        (),
+        (),
+    );
+
+    JuniperResponse(request.execute(&schema, &database).await)
 }
 
 #[tokio::main]
@@ -253,44 +269,16 @@ async fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let animals_config = HashMap::from([
-        ("Cat", AnimalConfig {
-            name: "Cat",
-            fields: HashMap::from_iter([("fur", FieldType::String)]),
-        }),
-        ("Dog", AnimalConfig {
-            name: "Dog",
-            fields: HashMap::from_iter([("breed", FieldType::String)]),
-        }),
-        ("Elephant", AnimalConfig {
-            name: "Elephant",
-            fields: HashMap::from_iter([("age", FieldType::Number)]),
-        }),
-    ]);
-
-    let animals = fixtures::generate_animals(&animals_config, 1_000_000);
+    let animals = fixtures::generate_animals(&ANIMAL_KINDS, 10_000);
 
     let database = Database {
         animals: Arc::new(RwLock::new(animals)),
     };
 
-    // How to provide QueryConfig to the query root
-    let schema = Schema::new_with_info(
-        QueryRoot,
-        EmptyMutation::new(),
-        EmptySubscription::new(),
-        Arc::new(QueryConfig {
-            animals: animals_config,
-        }),
-        (),
-        (),
-    );
-
     let app = Router::new()
         .route("/graphql", get(graphql))
         .route("/graphql", post(graphql))
         .route("/", get(graphiql("/graphql", None)))
-        .layer(Extension(Arc::new(schema)))
         .layer(Extension(database))
         .layer(CompressionLayer::new().gzip(true));
 

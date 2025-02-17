@@ -1,15 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::{Animal, AnimalConfig, AnimalKind, FieldValue};
+use crate::{Animal, AnimalKind, FieldValue};
 
-pub(crate) fn generate_animals(
-    config: &HashMap<AnimalKind, AnimalConfig>,
-    amount: usize,
-) -> Vec<Animal> {
-    let mut result = Vec::with_capacity(amount * config.len());
+pub(crate) fn generate_animals(animal_kinds: &HashSet<AnimalKind>, amount: usize) -> Vec<Animal> {
+    let mut result = Vec::with_capacity(amount * animal_kinds.len());
 
-    for kind in config.keys() {
-        for i in 0..(amount / config.len()) {
+    for kind in animal_kinds {
+        for i in 0..(amount / animal_kinds.len()) {
             let animal = match *kind {
                 "Dog" => dog(i, kind),
                 "Cat" => cat(i, kind),

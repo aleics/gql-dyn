@@ -47,7 +47,7 @@ async fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let animals = fixtures::generate_animals(&ANIMAL_KINDS, 10_000);
+    let animals = fixtures::generate_animals(&ANIMAL_KINDS, 100);
 
     let database = Database {
         animals: Arc::new(RwLock::new(animals)),

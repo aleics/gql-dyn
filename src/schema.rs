@@ -99,7 +99,7 @@ where
     S: ScalarValue,
 {
     fn name(i: &Self::TypeInfo) -> Option<&'static str> {
-        Some(i.current.name)
+        Some(i.current.kind)
     }
 
     fn meta<'r>(i: &Self::TypeInfo, registry: &mut Registry<'r, S>) -> MetaType<'r, S>

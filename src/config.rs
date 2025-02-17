@@ -10,7 +10,7 @@ pub(crate) enum FieldType {
 
 #[derive(Clone, Debug)]
 pub(crate) struct AnimalConfig {
-    pub(crate) name: AnimalKind,
+    pub(crate) kind: AnimalKind,
     pub(crate) fields: HashMap<&'static str, FieldType>,
 }
 
@@ -20,21 +20,21 @@ pub(crate) struct ConfigProvider;
 impl ConfigProvider {
     pub(crate) fn generate() -> HashMap<&'static str, AnimalConfig> {
         let mut cat_config = AnimalConfig {
-            name: "Cat",
+            kind: "Cat",
             fields: HashMap::new(),
         };
 
         cat_config.fields.insert("fur", FieldType::String);
 
         let mut dog_config = AnimalConfig {
-            name: "Dog",
+            kind: "Dog",
             fields: HashMap::new(),
         };
 
         dog_config.fields.insert("breed", FieldType::String);
 
         let mut elephant_config = AnimalConfig {
-            name: "Elephant",
+            kind: "Elephant",
             fields: HashMap::new(),
         };
 
@@ -42,9 +42,9 @@ impl ConfigProvider {
 
         let mut config = HashMap::new();
 
-        config.insert(cat_config.name, cat_config);
-        config.insert(dog_config.name, dog_config);
-        config.insert(elephant_config.name, elephant_config);
+        config.insert(cat_config.kind, cat_config);
+        config.insert(dog_config.kind, dog_config);
+        config.insert(elephant_config.kind, elephant_config);
 
         config
     }
